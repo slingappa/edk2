@@ -46,6 +46,19 @@ SbiMpxyLibInit (
   );
 
 /**
+  Deinitialize the MPXY library.
+
+  @retval  EFI_SUCCESS  Library resources were released.
+  @retval  Other        SBI could not detach the temporary buffer; resources
+                        remain allocated.
+**/
+RETURN_STATUS
+EFIAPI
+SbiMpxyLibDeinit (
+  VOID
+  );
+
+/**
   Get the list of channels available on MPXY.
 
   @param[in] StartIndex - Index to start reading from. Initially it will be zero,

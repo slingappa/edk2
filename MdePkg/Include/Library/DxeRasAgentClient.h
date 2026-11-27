@@ -74,6 +74,7 @@ RacGetRasAgentMpxyChannelId (
 
    @param[in] ChannelId  RAS agent's MPXY channel
    @retval EFI_SUCCESS on success
+   @retval EFI_OUT_OF_RESOURCES if no free context exists for the channel
    @retval EFI errors as returned by `SbiMpxyChannelOpen`
 **/
 EFI_STATUS
@@ -87,7 +88,7 @@ RacOpenRasAgentChannel (
 
    @param[in] ChannelId  RAS agent's MPXY channel
    @retval    EFI_SUCCESS on success
-   @retval    EFI_ABORTED if a found context has zero reference count
+   @retval    EFI_NOT_FOUND if no open context exists for the channel
    @retval    EFI errors as returned by `SbiMpxyChannelClose`
 **/
 EFI_STATUS
