@@ -22,12 +22,18 @@
 #include <Library/UefiBootServicesTableLib.h>
 #include <Library/UefiRuntimeServicesTableLib.h>
 
-#define MPXY_INVALID_SHMEM_ADDR  MAX_UINTN
+//
+// Per the SBI MPXY specification, 0xFFFFFFFF in both address halves disables
+// shared memory. Keep this marker at 32 bits even when XLEN is 64.
+//
+#define MPXY_INVALID_SHMEM_ADDR  ((UINTN)MAX_UINT32)
 #define MAX_MPXY_OPEN_CHANNELS   32
 
 STATIC VOID  *mNonChanTempShmem     = NULL;
 STATIC VOID  *mNonChanTempShmemPhys = NULL;
 STATIC UINTN  mNonChanTempShmemPages = 0;
+STATIC BOOLEAN  mNonChanTempShmemRegistered = FALSE;
+STATIC UINTN    mNonChanTempShmemRestorePhys = MPXY_INVALID_SHMEM_ADDR;
 
 typedef struct {
   BOOLEAN    InUse;
@@ -197,8 +203,8 @@ SbiMpxySetShmem (
           SBI_EXT_MPXY_SHMEM_FLAG_OVERWRITE;
 
   if (ShmemPhys == MPXY_INVALID_SHMEM_ADDR) {
-    ShmemPhysLo = MAX_UINTN;
-    ShmemPhysHi = MAX_UINTN;
+    ShmemPhysLo = MPXY_INVALID_SHMEM_ADDR;
+    ShmemPhysHi = MPXY_INVALID_SHMEM_ADDR;
   } else {
     ShmemPhysLo = ShmemPhys;
     /* Upper XLEN bits are unused for native-width addresses. */
@@ -220,7 +226,8 @@ SbiMpxySetShmem (
 
   if (ReadBackOldShmem) {
     PrevMemDet = (UINTN *)ShmemVirt;
-    if ((PrevMemDet[0] == MAX_UINTN) && (PrevMemDet[1] == MAX_UINTN)) {
+    if ((PrevMemDet[0] == MPXY_INVALID_SHMEM_ADDR) &&
+        (PrevMemDet[1] == MPXY_INVALID_SHMEM_ADDR)) {
       *PrevShmemPhys = MPXY_INVALID_SHMEM_ADDR;
     } else {
       *PrevShmemPhys = PrevMemDet[0];
@@ -228,6 +235,74 @@ SbiMpxySetShmem (
   }
 
   return EFI_SUCCESS;
+}
+
+/**
+  Register the temporary shared-memory buffer and remember what it replaced.
+
+  @param[out] PrevShmemPhys  Previously registered shared-memory address
+
+  @retval EFI_SUCCESS  The temporary buffer was registered.
+  @retval Other        Error returned by SBI.
+**/
+STATIC
+EFI_STATUS
+SbiMpxyRegisterTempShmem (
+  OUT UINTN  *PrevShmemPhys
+  )
+{
+  EFI_STATUS  Status;
+
+  Status = SbiMpxySetShmem (
+             (UINTN)mNonChanTempShmemPhys,
+             (UINTN)mNonChanTempShmem,
+             PrevShmemPhys,
+             TRUE /* Read back the old address */
+             );
+  if (EFI_ERROR (Status)) {
+    return Status;
+  }
+
+  if (*PrevShmemPhys != (UINTN)mNonChanTempShmemPhys) {
+    mNonChanTempShmemRestorePhys = *PrevShmemPhys;
+  } else if (!mNonChanTempShmemRegistered) {
+    // The prior registration is already this buffer, so detach it on teardown.
+    mNonChanTempShmemRestorePhys = MPXY_INVALID_SHMEM_ADDR;
+  }
+
+  mNonChanTempShmemRegistered = TRUE;
+  return EFI_SUCCESS;
+}
+
+/**
+  Restore the address saved by SbiMpxyRegisterTempShmem().
+
+  @param[in] ShmemPhys  Address to restore
+
+  @retval EFI_SUCCESS  The previous address was restored.
+  @retval Other        Error returned by SBI.
+**/
+STATIC
+EFI_STATUS
+SbiMpxyRestoreTempShmem (
+  IN UINTN  ShmemPhys
+  )
+{
+  EFI_STATUS  Status;
+
+  Status = SbiMpxySetShmem (
+             ShmemPhys,
+             MPXY_INVALID_SHMEM_ADDR,
+             NULL,
+             FALSE /* Read back the old address */
+             );
+  if (!EFI_ERROR (Status) &&
+      (ShmemPhys != (UINTN)mNonChanTempShmemPhys)) {
+    mNonChanTempShmemRegistered = FALSE;
+    mNonChanTempShmemRestorePhys = MPXY_INVALID_SHMEM_ADDR;
+  }
+
+  return Status;
 }
 
 /**
@@ -269,12 +344,7 @@ SbiMpxyGetChannelList (
   Shmem = mNonChanTempShmem;
 
   /* Set the shared memory to memory allocated for non-channel specific reads */
-  Status = SbiMpxySetShmem (
-             (UINTN)mNonChanTempShmemPhys,
-             (UINTN)mNonChanTempShmem,
-             &OldShmemPhys,
-             TRUE /* Read back the old address */
-             );
+  Status = SbiMpxyRegisterTempShmem (&OldShmemPhys);
 
   if (EFI_ERROR (Status)) {
     return Status;
@@ -308,12 +378,7 @@ SbiMpxyGetChannelList (
   Status = EFI_SUCCESS;
 
 RestoreShmem:
-  RestoreStatus = SbiMpxySetShmem (
-                    OldShmemPhys,
-                    MPXY_INVALID_SHMEM_ADDR,
-                    NULL,
-                    FALSE /* Read back the old address */
-                    );
+  RestoreStatus = SbiMpxyRestoreTempShmem (OldShmemPhys);
   if (EFI_ERROR (RestoreStatus)) {
     return RestoreStatus;
   }
@@ -356,12 +421,7 @@ SbiMpxyReadChannelAttrs (
   }
 
   /* Set the shared memory to memory allocated for non-channel specific reads */
-  Status = SbiMpxySetShmem (
-             (UINTN)mNonChanTempShmemPhys,
-             (UINTN)mNonChanTempShmem,
-             &OldShmemPhys,
-             TRUE /* Read back the old address */
-             );
+  Status = SbiMpxyRegisterTempShmem (&OldShmemPhys);
 
   if (EFI_ERROR (Status)) {
     return Status;
@@ -390,12 +450,7 @@ SbiMpxyReadChannelAttrs (
   Status = EFI_SUCCESS;
 
 RestoreShmem:
-  RestoreStatus = SbiMpxySetShmem (
-                    OldShmemPhys,
-                    MPXY_INVALID_SHMEM_ADDR,
-                    NULL,
-                    FALSE /* Read back the old address */
-                    );
+  RestoreStatus = SbiMpxyRestoreTempShmem (OldShmemPhys);
   if (EFI_ERROR (RestoreStatus)) {
     return RestoreStatus;
   }
@@ -643,8 +698,8 @@ SbiMpxyLibInit (
   }
 
   //
-  // Allocate memory to be shared with OpenSBI for initial MPXY communications
-  // until channels are initialized by their respective drivers.
+  // Allocate memory shared with the SBI implementation for initial MPXY
+  // communications until channels are initialized by their respective drivers.
   //
   mNonChanTempShmem = AllocateAlignedRuntimePages (
                         EFI_SIZE_TO_PAGES (ShmemSize),
@@ -655,6 +710,8 @@ SbiMpxyLibInit (
     return EFI_OUT_OF_RESOURCES;
   }
 
+  mNonChanTempShmemRegistered = FALSE;
+  mNonChanTempShmemRestorePhys = MPXY_INVALID_SHMEM_ADDR;
   mNonChanTempShmemPages = EFI_SIZE_TO_PAGES (ShmemSize);
   mNonChanTempShmemPhys  = mNonChanTempShmem;
 
@@ -673,6 +730,8 @@ SbiMpxyLibInit (
     mNonChanTempShmem      = NULL;
     mNonChanTempShmemPhys  = NULL;
     mNonChanTempShmemPages = 0;
+    mNonChanTempShmemRegistered = FALSE;
+    mNonChanTempShmemRestorePhys = MPXY_INVALID_SHMEM_ADDR;
     return Status;
   }
 
@@ -685,6 +744,8 @@ SbiMpxyLibInit (
   Deinitialize the MPXY library.
 
   @retval EFI_SUCCESS   Library resources were released.
+  @retval Other         SBI could not detach the temporary buffer; resources
+                        remain allocated.
 **/
 RETURN_STATUS
 EFIAPI
@@ -692,6 +753,24 @@ SbiMpxyLibDeinit (
   VOID
   )
 {
+  EFI_STATUS  Status;
+
+  if (mNonChanTempShmemRegistered) {
+    Status = SbiMpxySetShmem (
+               mNonChanTempShmemRestorePhys,
+               MPXY_INVALID_SHMEM_ADDR,
+               NULL,
+               FALSE /* Read back the old address */
+               );
+    if (EFI_ERROR (Status)) {
+      // Keep the registered buffer allocated if SBI may still reference it.
+      return Status;
+    }
+
+    mNonChanTempShmemRegistered = FALSE;
+    mNonChanTempShmemRestorePhys = MPXY_INVALID_SHMEM_ADDR;
+  }
+
   if (mDxeRiscVMpxyLibVirtualNotifyEvent != NULL) {
     gBS->CloseEvent (mDxeRiscVMpxyLibVirtualNotifyEvent);
     mDxeRiscVMpxyLibVirtualNotifyEvent = NULL;
@@ -704,6 +783,8 @@ SbiMpxyLibDeinit (
   mNonChanTempShmem      = NULL;
   mNonChanTempShmemPhys  = NULL;
   mNonChanTempShmemPages = 0;
+  mNonChanTempShmemRegistered = FALSE;
+  mNonChanTempShmemRestorePhys = MPXY_INVALID_SHMEM_ADDR;
   mMpxyLibraryInitialized = FALSE;
 
   return EFI_SUCCESS;

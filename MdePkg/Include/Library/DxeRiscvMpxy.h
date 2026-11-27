@@ -49,6 +49,8 @@ SbiMpxyLibInit (
   Deinitialize the MPXY library.
 
   @retval  EFI_SUCCESS  Library resources were released.
+  @retval  Other        SBI could not detach the temporary buffer; resources
+                        remain allocated.
 **/
 RETURN_STATUS
 EFIAPI
