@@ -242,6 +242,8 @@ RacInit (
                &mNumRasAgents
                );
     if (EFI_ERROR (Status)) {
+      SbiMpxyLibDeinit ();
+
       return Status;
     }
 
@@ -370,7 +372,7 @@ FreeRasAgentContext (
 
    @param[in] ChannelId  RAS agent's MPXY channel
    @retval    EFI_SUCCESS on success
-   @retval    EFI_ABORTED if a found context has zero reference count
+   @retval    EFI_OUT_OF_RESOURCES if no free context exists for the channel
    @retval    EFI errors as returned by `SbiMpxyChannelOpen`
 **/
 EFI_STATUS
@@ -411,7 +413,7 @@ RacOpenRasAgentChannel (
 
    @param[in] ChannelId  RAS agent's MPXY channel
    @retval    EFI_SUCCESS on success
-   @retval    EFI_ABORTED if a found context has zero reference count
+   @retval    EFI_NOT_FOUND if no open context exists for the channel
    @retval    EFI errors as returned by `SbiMpxyChannelClose`
 **/
 EFI_STATUS
@@ -428,14 +430,13 @@ RacCloseRasAgentChannel (
   }
 
   ChannelContext = FindRasAgentContext (ChannelId);
-  if (ChannelContext != NULL) {
-    ChannelContext->RefCount++;
-    return EFI_SUCCESS;
+  if (ChannelContext == NULL) {
+    return EFI_NOT_FOUND;
   }
 
-  ChannelContext = AllocRasAgentContext (ChannelId);
-  if (ChannelContext == NULL) {
-    return EFI_OUT_OF_RESOURCES;
+  if (ChannelContext->RefCount > 1) {
+    ChannelContext->RefCount--;
+    return EFI_SUCCESS;
   }
 
   Status = SbiMpxyChannelClose (ChannelId);
