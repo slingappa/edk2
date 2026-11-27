@@ -27,6 +27,7 @@
 
 STATIC VOID  *mNonChanTempShmem     = NULL;
 STATIC VOID  *mNonChanTempShmemPhys = NULL;
+STATIC UINTN  mNonChanTempShmemPages = 0;
 
 typedef struct {
   BOOLEAN    InUse;
@@ -654,7 +655,8 @@ SbiMpxyLibInit (
     return EFI_OUT_OF_RESOURCES;
   }
 
-  mNonChanTempShmemPhys = mNonChanTempShmem;
+  mNonChanTempShmemPages = EFI_SIZE_TO_PAGES (ShmemSize);
+  mNonChanTempShmemPhys  = mNonChanTempShmem;
 
   //
   // Register SetVirtualAddressMap () notify function
@@ -667,13 +669,42 @@ SbiMpxyLibInit (
                   &mDxeRiscVMpxyLibVirtualNotifyEvent
                   );
   if (EFI_ERROR (Status)) {
-    FreeAlignedPages (mNonChanTempShmem, EFI_SIZE_TO_PAGES (ShmemSize));
-    mNonChanTempShmem     = NULL;
-    mNonChanTempShmemPhys = NULL;
+    FreeAlignedPages (mNonChanTempShmem, mNonChanTempShmemPages);
+    mNonChanTempShmem      = NULL;
+    mNonChanTempShmemPhys  = NULL;
+    mNonChanTempShmemPages = 0;
     return Status;
   }
 
   mMpxyLibraryInitialized = TRUE;
 
   return Status;
+}
+
+/**
+  Deinitialize the MPXY library.
+
+  @retval EFI_SUCCESS   Library resources were released.
+**/
+RETURN_STATUS
+EFIAPI
+SbiMpxyLibDeinit (
+  VOID
+  )
+{
+  if (mDxeRiscVMpxyLibVirtualNotifyEvent != NULL) {
+    gBS->CloseEvent (mDxeRiscVMpxyLibVirtualNotifyEvent);
+    mDxeRiscVMpxyLibVirtualNotifyEvent = NULL;
+  }
+
+  if ((mNonChanTempShmem != NULL) && (mNonChanTempShmemPages != 0)) {
+    FreeAlignedPages (mNonChanTempShmem, mNonChanTempShmemPages);
+  }
+
+  mNonChanTempShmem      = NULL;
+  mNonChanTempShmemPhys  = NULL;
+  mNonChanTempShmemPages = 0;
+  mMpxyLibraryInitialized = FALSE;
+
+  return EFI_SUCCESS;
 }
